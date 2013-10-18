@@ -127,8 +127,14 @@
 #%  required: no
 #%  guisection: Grid
 #%end
+#%option
+#%  key: move
+#%  description: Path where move and copy the mapset
+#%  type: string
+#%  required: no
+#%  guisection: Grid
+#%end
 
-# move=None, log=False, start_row=0, start_col=0, out_prefix=''
 
 from __future__ import print_function
 import multiprocessing as mltp
@@ -141,6 +147,7 @@ from grass.pygrass.modules.grid.patch import get_start_end_index
 from grass.pygrass.raster import RasterRow
 
 DEBUG = False
+
 
 def rpatch_row(rast, rasts, bboxes, max_rasts):
     """Patch a row of bound boxes."""
@@ -187,80 +194,90 @@ def rpatch_map(raster, mapset, mset_str, bbox_list, overwrite=False,
 
 
 class SegModule(GridModule):
+    """Extend the GridModule class, modifying the patch method."""
+
+    def __init__(self, *args, **kwargs):
+        self.memory = kwargs['memory']
+        super(SegModule, self).__init__(*args, **kwargs)
+
     def patch(self):
         """Patch the final results."""
         # patch all the outputs
         bboxes = split_region_tiles(width=self.width, height=self.height)
         inputs = self.module.inputs
+        print("Start patching the segments")
+        start = time.time()
         rpatch_map(inputs.outputs_prefix % inputs.thresholds[-1],
                    self.mset.name, self.msetstr, bboxes,
                    self.module.flags.overwrite,
                    self.start_row, self.start_col, self.out_prefix)
+        print("%s, required: %.2fs" % (OPTS['output'], time.time() - start))
+
+        # segment
+        print("Start running segment for the last time in the whole region")
+        start = time.time()
+        iseg = Module('i.segment')
+        threshold = self.module.inputs.thresholds[-1]
+        iseg(group=self.module.inputs.group,
+             output=self.module.outputs.output,
+             threshold=threshold,
+             method=self.module.inputs.method,
+             similarity=self.module.inputs.similarity,
+             minsize=self.module.inputs.minsizes[-1],
+             memory=self.memory,
+             iterations=3,
+             seeds=self.module.inputs.outputs_prefix % threshold)
+        print("%s, required: %.2fs" % (OPTS['output'], time.time() - start))
 
 
 def segment(thresholds, minsizes, output='seg__%.2f', **opts):
+    """Call the i.segment module hierarchical"""
     iseg = Module('i.segment')
-    seeds = None
+    seeds = opts['seeds'] if opts['seeds'] else None
     for thr, msize in zip(thresholds, minsizes):
         opts['threshold'] = thr
         opts['minsize'] = msize
         opts['seeds'] = seeds
-        opts['flags'] = flags
+        opts['flags'] = FLAGS
         opts['output'] = output % thr
-        st = time.time()
+        start = time.time()
         iseg(**opts)
-        print("%s, required: %.2fs" % (opts['output'], time.time() - st))
+        print("%s, required: %.2fs" % (opts['output'], time.time() - start))
         seeds = opts['output']  # update seeds
 
 
 if __name__ == "__main__":
-    import os
-    GISRC = os.getenv('GISRC')
-    opts, flags = parser()
-    width = opts.pop('width')
-    height = opts.pop('height')
-    overlap = opts.pop('overlap')
-    processes = opts.pop('processes')
-    processes = int(processes) if processes else mltp.cpu_count()
-    memory = int(opts['memory'])
-    thrs = [float(thr) for thr in opts['thresholds'].split(',')]
-    print(repr(opts['minsizes']))
-    if opts['minsizes']:
-        minsizes = [int(m) for m in opts['minsizes'].split(',')]
-        if len(minsizes) != len(thrs):
-            minsizes = [int(minsizes[0]), ] * len(thrs)
+    OPTS, FLAGS = parser()
+    WIDTH = OPTS.pop('width')
+    HEIGHT = OPTS.pop('height')
+    OVERLAP = OPTS.pop('overlap')
+    MOVE = OPTS.pop('move')
+    MOVE = MOVE if MOVE else None
+    PROCESSES = OPTS.pop('processes')
+    PROCESSES = int(PROCESSES) if PROCESSES else mltp.cpu_count()
+    MEMORY = int(OPTS['memory'])
+    THRS = [float(thr) for thr in OPTS['thresholds'].split(',')]
+    print(repr(OPTS['minsizes']))
+    if OPTS['minsizes']:
+        MINSIZES = [int(m) for m in OPTS['minsizes'].split(',')]
+        if len(MINSIZES) != len(THRS):
+            MINSIZES = [int(MINSIZES[0]), ] * len(THRS)
     else:
-        minsizes = [1, ] * len(thrs)
+        MINSIZES = [1, ] * len(THRS)
 
     # define new cleaned parameters
-    opts['thresholds'] = thrs
-    opts['minsizes'] = minsizes
-    opts['iterations'] = int(opts['iterations'])
-    opts['memory'] = memory / processes
-    if width and height:
-        seg = SegModule('i.segment.hierarchical',
-                        width=int(width), height=int(height),
-                        overlap=int(overlap),
-                        processes=processes,
-                        debug=DEBUG, **opts)
-        #import ipdb; ipdb.set_trace()
-        seg.run()
-        os.environ['GISRC'] = GISRC
-        print("Start running segment for the last time in the whole region")
-        st = time.time()
-        #import ipdb; ipdb.set_trace()
-        iseg = Module('i.segment')
-        iseg(group=opts['group'],
-             output=opts['output'],
-             threshold=opts['thresholds'][-1],
-             method=opts['method'],
-             similarity=opts['similarity'],
-             minsize=opts['minsizes'][-1],
-             memory=memory,
-             iterations=3,
-             seeds=opts['outputs_prefix'] % opts['thresholds'][-1])
-        print("%s, required: %.2fs" % (opts['output'], time.time() - st))
+    OPTS['thresholds'] = THRS
+    OPTS['minsizes'] = MINSIZES
+    OPTS['iterations'] = int(OPTS['iterations'])
+    OPTS['memory'] = MEMORY / PROCESSES
+    if WIDTH and HEIGHT:
+        SEG = SegModule('i.segment.hierarchical',
+                        width=int(WIDTH), height=int(HEIGHT),
+                        overlap=int(OVERLAP),
+                        processes=PROCESSES, move=MOVE,
+                        debug=DEBUG, **OPTS)
+        SEG.run()
     else:
-        opts.pop('output')
-        segment(opts.pop('thresholds'), opts.pop('minsizes'),
-                output=opts.pop('outputs_prefix'), **opts)
+        OPTS.pop('output')
+        segment(OPTS.pop('thresholds'), OPTS.pop('minsizes'),
+                output=OPTS.pop('outputs_prefix'), **OPTS)
