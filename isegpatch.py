@@ -30,10 +30,8 @@ def rpatch_row(rast, rasts, bboxes, max_rasts):
 
 
 def rpatch_map(raster, mapset, mset_str, bbox_list, overwrite=False,
-               start_row=0, start_col=0, prefix='',
-               gisrc_src=None, gisrc_dst=None):
+               start_row=0, start_col=0, prefix=''):
     """Patch raster using a bounding box list to trim the raster."""
-    import ipdb; ipdb.set_trace()
     # Instantiate the RasterRow input objects
     rast = RasterRow(prefix + raster, mapset)
     with RasterRow(name=raster, mapset=mset_str % (0, 0), mode='r') as rtype:

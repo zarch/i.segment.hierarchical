@@ -144,6 +144,7 @@ import sys
 from grass.script.core import parser
 from grass.pygrass.modules import Module
 from grass.pygrass.modules.grid import GridModule
+from grass.pygrass.modules.grid.grid import copy_rasters
 from grass.pygrass.modules.grid.split import split_region_tiles
 
 from grass.pygrass.gis import Location
@@ -157,7 +158,7 @@ sys.path.append(path)
 from isegpatch import rpatch_map
 
 
-DEBUG = True
+DEBUG = False
 
 
 class SegModule(GridModule):
@@ -171,7 +172,9 @@ class SegModule(GridModule):
         """Patch the final results."""
         # make all mapset in the location visible
         loc = Location()
-        self.mset.visible.extend(loc.mapsets())
+        mset = loc[self.mset.name]
+        mset.current()
+        mset.visible.extend(loc.mapsets())
         # patch all the outputs
         bboxes = split_region_tiles(width=self.width, height=self.height)
         inputs = self.module.inputs
@@ -180,8 +183,7 @@ class SegModule(GridModule):
         rpatch_map(inputs.outputs_prefix % inputs.thresholds[-1],
                    self.mset.name, self.msetstr, bboxes,
                    self.module.flags.overwrite,
-                   self.start_row, self.start_col, self.out_prefix,
-                   self.gisrc_src, self.gisrc_dst)
+                   self.start_row, self.start_col, self.out_prefix)
         print("%s, required: %.2fs" % (OPTS['output'], time.time() - start))
 
         # segment
@@ -199,6 +201,11 @@ class SegModule(GridModule):
              iterations=3,
              seeds=self.module.inputs.outputs_prefix % threshold)
         print("%s, required: %.2fs" % (OPTS['output'], time.time() - start))
+
+        self.mset.current()
+        if self.move:
+            copy_rasters([self.module.outputs.output, ],
+                         self.gisrc_dst, self.gisrc_src)
 
 
 def segment(thresholds, minsizes, output='seg__%.2f', **opts):
@@ -279,7 +286,6 @@ if __name__ == "__main__":
     OPTS['iterations'] = int(OPTS['iterations'])
     OPTS['memory'] = MEMORY / PROCESSES
     if WIDTH and HEIGHT:
-        #import ipdb; ipdb.set_trace()
         SEG = SegModule('i.segment.hierarchical',
                         width=int(WIDTH), height=int(HEIGHT),
                         overlap=int(OVERLAP),
