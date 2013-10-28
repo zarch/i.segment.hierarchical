@@ -139,58 +139,25 @@
 from __future__ import print_function
 import multiprocessing as mltp
 import time
+import sys
+
 from grass.script.core import parser
 from grass.pygrass.modules import Module
 from grass.pygrass.modules.grid import GridModule
 from grass.pygrass.modules.grid.split import split_region_tiles
-from grass.pygrass.modules.grid.patch import get_start_end_index
-from grass.pygrass.raster import RasterRow
 
-DEBUG = False
+from grass.pygrass.gis import Location
+from grass.pygrass.functions import get_lib_path
 
+path = get_lib_path("i.segment.hierarchical", "")
+if path is None:
+    raise ImportError("Not able to find the path %s directory." % path)
 
-def rpatch_row(rast, rasts, bboxes, max_rasts):
-    """Patch a row of bound boxes."""
-    sei = get_start_end_index(bboxes)
-    # instantiate two buffer
-    buff = rasts[0][0]
-    rbuff = rasts[0][0]
-    r_start, r_end, c_start, c_end = sei[0]
-    for row in xrange(r_start, r_end):
-        for col, ras in enumerate(rasts):
-            r_start, r_end, c_start, c_end = sei[col]
-            buff = ras.get_row(row, buff)
-            rbuff[c_start:c_end] = buff[c_start:c_end] + max_rasts[col]
-        rast.put_row(rbuff)
+sys.path.append(path)
+from isegpatch import rpatch_map
 
 
-def rpatch_map(raster, mapset, mset_str, bbox_list, overwrite=False,
-               start_row=0, start_col=0, prefix=''):
-    """Patch raster using a bounding box list to trim the raster."""
-    #import ipdb; ipdb.set_trace()
-    # Instantiate the RasterRow input objects
-    rast = RasterRow(prefix + raster, mapset)
-    with RasterRow(name=raster, mapset=mset_str % (0, 0), mode='r') as rtype:
-        rast.open('w', mtype=rtype.mtype, overwrite=overwrite)
-    rasts = []
-    mrast = 0
-    for row, rbbox in enumerate(bbox_list):
-        rrasts = []
-        max_rasts = []
-        for col in range(len(rbbox)):
-            rrasts.append(RasterRow(name=raster,
-                                    mapset=mset_str % (start_row + row,
-                                                       start_col + col)))
-            rrasts[-1].open('r')
-            mrast += rrasts[-1].info.max + 1
-            max_rasts.append(mrast)
-        rasts.append(rrasts)
-        rpatch_row(rast, rrasts, rbbox, max_rasts)
-
-    for rrast in rasts:
-        for rast_ in rrast:
-            rast_.close()
-    rast.close()
+DEBUG = True
 
 
 class SegModule(GridModule):
@@ -202,6 +169,9 @@ class SegModule(GridModule):
 
     def patch(self):
         """Patch the final results."""
+        # make all mapset in the location visible
+        loc = Location()
+        self.mset.visible.extend(loc.mapsets())
         # patch all the outputs
         bboxes = split_region_tiles(width=self.width, height=self.height)
         inputs = self.module.inputs
@@ -210,7 +180,8 @@ class SegModule(GridModule):
         rpatch_map(inputs.outputs_prefix % inputs.thresholds[-1],
                    self.mset.name, self.msetstr, bboxes,
                    self.module.flags.overwrite,
-                   self.start_row, self.start_col, self.out_prefix)
+                   self.start_row, self.start_col, self.out_prefix,
+                   self.gisrc_src, self.gisrc_dst)
         print("%s, required: %.2fs" % (OPTS['output'], time.time() - start))
 
         # segment
@@ -246,6 +217,44 @@ def segment(thresholds, minsizes, output='seg__%.2f', **opts):
         seeds = opts['output']  # update seeds
 
 
+try:
+    from grass.pygrass.modules.grid.node import Nodes
+    from grass.pygrass.modules.grid import qsub
+
+
+    CODETEMPLATE = """
+from grass.pygrass.modules.grid import GridModule
+from grass.pygrass.gis.region import Region
+from grass.pygrass.vector import Bbox
+
+reg = Region()
+reg.set_bbox({bbox})
+cmd = GridModule(cmd='{cmd}',
+                 {code},
+                 region=reg)
+cmd.run(clean=False)
+
+"""
+
+    class SegNodes(Nodes):
+        """Extend the GridModule class, modifying the patch method."""
+
+        def __init__(self, patch, *args, **kwargs):
+            self.patch = patch
+            self.memory = kwargs['memory']
+            super(SegModule, self).__init__(*args, **kwargs)
+
+        def patch(self):
+            code = ''
+            qproc = qsub.Qsub(name='',
+                              code=code,
+                              pbs_template=self.pbs_tmpl,
+                              opts=self.opts)
+            self.patch(self.cmd, self.nwidth, self.nheight, self.out_regexp)
+
+except ImportError:
+    SegNodes = None
+
 if __name__ == "__main__":
     OPTS, FLAGS = parser()
     WIDTH = OPTS.pop('width')
@@ -256,10 +265,9 @@ if __name__ == "__main__":
     PROCESSES = OPTS.pop('processes')
     PROCESSES = int(PROCESSES) if PROCESSES else mltp.cpu_count()
     MEMORY = int(OPTS['memory'])
-    THRS = [float(thr) for thr in OPTS['thresholds'].split(',')]
-    print(repr(OPTS['minsizes']))
+    THRS = [float(thr) for thr in OPTS['thresholds'].split(',') if thr]
     if OPTS['minsizes']:
-        MINSIZES = [int(m) for m in OPTS['minsizes'].split(',')]
+        MINSIZES = [int(m) for m in OPTS['minsizes'].split(',') if m]
         if len(MINSIZES) != len(THRS):
             MINSIZES = [int(MINSIZES[0]), ] * len(THRS)
     else:
@@ -271,6 +279,7 @@ if __name__ == "__main__":
     OPTS['iterations'] = int(OPTS['iterations'])
     OPTS['memory'] = MEMORY / PROCESSES
     if WIDTH and HEIGHT:
+        #import ipdb; ipdb.set_trace()
         SEG = SegModule('i.segment.hierarchical',
                         width=int(WIDTH), height=int(HEIGHT),
                         overlap=int(OVERLAP),
