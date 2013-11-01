@@ -7,6 +7,7 @@ Created on Mon Oct 21 12:54:42 2013
 import os
 import re
 
+import grass.lib.gis as libgis
 
 from grass.pygrass.modules.grid.patch import get_start_end_index
 from grass.pygrass.modules.grid.split import split_region_tiles
@@ -38,10 +39,12 @@ def rpatch_map(raster, mapset, mset_str, bbox_list, overwrite=False,
         rast.open('w', mtype=rtype.mtype, overwrite=overwrite)
     rasts = []
     mrast = 0
+    nrows = len(bbox_list)
     for row, rbbox in enumerate(bbox_list):
         rrasts = []
         max_rasts = []
         for col in range(len(rbbox)):
+            libgis.G_percent(row, nrows, 1)
             rrasts.append(RasterRow(name=raster,
                                     mapset=mset_str % (start_row + row,
                                                        start_col + col)))
@@ -50,10 +53,10 @@ def rpatch_map(raster, mapset, mset_str, bbox_list, overwrite=False,
             max_rasts.append(mrast)
         rasts.append(rrasts)
         rpatch_row(rast, rrasts, rbbox, max_rasts)
+        for rst in rrasts:
+            rst.close()
+            del(rst)
 
-    for rrast in rasts:
-        for rast_ in rrast:
-            rast_.close()
     rast.close()
 
 
